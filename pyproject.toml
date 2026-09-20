@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "myproject-backend"
+version = "0.1.0"
+description = "myproject backend application"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ai*", "app*", "integrations*", "jobs*"]
+exclude = ["tests*"]
