@@ -49,33 +49,30 @@ async def change_password(
     await service.change_password(str(current_user.id), payload.old_password, payload.new_password)
     return success(True, "Password changed successfully", None)
 
-@router.get("/wallet", response_model=APIResponse[dict])
+# app/api/wallet.py
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_current_user
+from app.db.base import get_db
+from app.schemas.wallet import WalletBalanceResponse, WalletTopupRequest, WalletTopupResponse
+from app.services.wallet_checkout_service import WalletCheckoutService
+from app.services.wallet_service import WalletService
+
+router = APIRouter(prefix="/wallet", tags=["wallet"])
+
+
+@router.get("/me", response_model=WalletBalanceResponse)
 async def get_wallet(db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
-    wallet = await wallet_service.get_or_create_wallet(db, user.id)
+    wallet = await WalletService(db).get_or_create(user.id)
     await db.commit()
-    return {"balance": float(wallet.balance), "currency": wallet.currency}
+    return WalletBalanceResponse(balance=float(wallet.balance), currency=wallet.currency)
 
 
-@router.post("/topup-wallet", response_model=APIResponse[dict])
-async def initiate_topup(
-    amount: float = Body(..., embed=True),
-    db: AsyncSession = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    if amount <= 0:
+@router.post("/topup", response_model=WalletTopupResponse)
+async def initiate_topup(body: WalletTopupRequest, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    if body.amount <= 0:
         raise HTTPException(400, "Amount must be positive")
 
-    intent = stripe.PaymentIntent.create(
-        amount=int(amount * 100), currency="usd",
-        metadata={"user_id": str(user.id), "purpose": "wallet_topup"},
-    )
-
-    db.add(Payment(
-        user_id=user.id, video_id=None, purchase_id=None,
-        purpose=PaymentPurpose.WALLET_TOPUP, status=PaymentStatus.CREATED,
-        amount=amount, currency="USD",
-        provider="stripe", provider_reference=intent.id,
-    ))
-    await db.commit()
-
-    return {"client_secret": intent.client_secret}
+    client_secret = await WalletCheckoutService(db).initiate_topup(user.id, body.amount)
+    return WalletTopupResponse(client_secret=client_secret)

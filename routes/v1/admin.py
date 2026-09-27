@@ -370,17 +370,17 @@ import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.base import get_db
 from app.core.config import settings
 from app.core.deps import require_admin
-from app.models.video import Video, VideoStatus
-from app.storage.factory import get_storage
+from app.db.base import get_db
+from app.schemas.video import VideoUploadResponse
+from app.services.video_service import UnsupportedSourceFormatError, VideoService
 from app.workers.tasks import process_video
 
 router = APIRouter(prefix="/admin/videos", tags=["admin-videos"])
 
 
-@router.post("", status_code=202)
+@router.post("", status_code=202, response_model=VideoUploadResponse)
 async def upload_video(
     title: str = Form(...),
     description: str | None = Form(None),
@@ -392,37 +392,22 @@ async def upload_video(
     db: AsyncSession = Depends(get_db),
     _admin=Depends(require_admin),
 ):
-    if file.content_type not in {"video/mp4", "video/quicktime", "video/x-matroska"}:
-        raise HTTPException(400, "Unsupported source format, upload mp4, mov, or mkv")
-
-    video = Video(
-        title=title, slug=_slugify(title), description=description,
-        price=price, extension_price=extension_price,
-        rental_days=rental_days, extension_days=extension_days,
-        status=VideoStatus.UPLOADING,
-    )
-    db.add(video)
-    await db.flush()
-
-    storage = get_storage()
-    source_key = f"videos/{video.id}/source/{file.filename}"
-
-    # Stream to a temp file rather than reading the whole upload into memory,
-    # a two hour source file will not fit comfortably in RAM.
-    tmp_path = f"/tmp/{video.id}_{file.filename}"
+    tmp_path = f"/tmp/{uuid.uuid4()}_{file.filename}"
     with open(tmp_path, "wb") as out:
         while chunk := await file.read(1024 * 1024):
             out.write(chunk)
 
-    await storage.save_file(source_key, tmp_path, content_type=file.content_type)
-    video.source_storage_key = source_key
-    video.status = VideoStatus.PROCESSING
-    await db.commit()
+    service = VideoService(db)
+    try:
+        video = await service.create_from_upload(
+            title=title, description=description, price=price, extension_price=extension_price,
+            rental_days=rental_days, extension_days=extension_days,
+            content_type=file.content_type, local_source_path=tmp_path, original_filename=file.filename,
+        )
+    except UnsupportedSourceFormatError:
+        raise HTTPException(400, "Unsupported source format, upload mp4, mov, or mkv")
 
+    await db.commit()
     process_video.delay(str(video.id))
 
-    return {"id": str(video.id), "status": video.status.value}
-
-
-def _slugify(title: str) -> str:
-    return "-".join(title.lower().split()) + "-" + uuid.uuid4().hex[:6]
+    return VideoUploadResponse(id=video.id, status=video.status.value)
