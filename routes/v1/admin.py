@@ -362,49 +362,67 @@ async def get_admin_audit_trails(
 
     return success(True, "Admin audit trails fetched successfully", audit_trails_resp)
 
-@router.get(
-    "/audit-trails/organization",
-    response_model=APIResponse[PaginatedResponse[AuditTrailResponse]],
-    tags=["Audit Trails"],
-)
-async def get_organization_audit_trails(
-    page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100),
-    organization_id: uuid.UUID = Query(None),
-    organization_name: str = Query(None),
-    organization_code: str = Query(None),
-    username: str = Query(None),
-    user_name: str = Query(None),
-    user_email: str = Query(None),
-    date: str = Query(None),
-    start_date: str = Query(None),
-    end_date: str = Query(None),
-    db: AsyncSession = Depends(get_db),  # noqa: B008
-    user=Depends(get_current_user),  # noqa: B008
-    account=Depends(require_account("admin", permission="audit_trails.read")),  # noqa: B008
+
+
+# app/api/admin/videos.py
+import uuid
+
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.base import get_db
+from app.core.config import settings
+from app.core.deps import require_admin
+from app.models.video import Video, VideoStatus
+from app.storage.factory import get_storage
+from app.workers.tasks import process_video
+
+router = APIRouter(prefix="/admin/videos", tags=["admin-videos"])
+
+
+@router.post("", status_code=202)
+async def upload_video(
+    title: str = Form(...),
+    description: str | None = Form(None),
+    price: float = Form(...),
+    extension_price: float = Form(...),
+    rental_days: int = Form(settings.DEFAULT_RENTAL_DAYS),
+    extension_days: int = Form(settings.DEFAULT_EXTENSION_DAYS),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(require_admin),
 ):
-    service = AdminAuditTrailService(AdminAuditTrailRepository(db))
-    audit_trails, total = await service.get_organization_audit_trails(
-        page=page,
-        size=size,
-        organization_id=organization_id,
-        organization_name=organization_name,
-        organization_code=organization_code,
-        username=username,
-        user_name=user_name,
-        user_email=user_email,
-        date=date,
-        start_date=start_date,
-        end_date=end_date,
-    )
-    
-    audit_trails_resp = PaginatedResponse(
-        items=audit_trails,
-        total=total,
-        page=page,
-        size=size,
-        pages=(total + size - 1) // size
-    )
+    if file.content_type not in {"video/mp4", "video/quicktime", "video/x-matroska"}:
+        raise HTTPException(400, "Unsupported source format, upload mp4, mov, or mkv")
 
-    return success(True, "Organization audit trails fetched successfully", audit_trails_resp)
+    video = Video(
+        title=title, slug=_slugify(title), description=description,
+        price=price, extension_price=extension_price,
+        rental_days=rental_days, extension_days=extension_days,
+        status=VideoStatus.UPLOADING,
+    )
+    db.add(video)
+    await db.flush()
 
+    storage = get_storage()
+    source_key = f"videos/{video.id}/source/{file.filename}"
+
+    # Stream to a temp file rather than reading the whole upload into memory,
+    # a two hour source file will not fit comfortably in RAM.
+    tmp_path = f"/tmp/{video.id}_{file.filename}"
+    with open(tmp_path, "wb") as out:
+        while chunk := await file.read(1024 * 1024):
+            out.write(chunk)
+
+    await storage.save_file(source_key, tmp_path, content_type=file.content_type)
+    video.source_storage_key = source_key
+    video.status = VideoStatus.PROCESSING
+    await db.commit()
+
+    process_video.delay(str(video.id))
+
+    return {"id": str(video.id), "status": video.status.value}
+
+
+def _slugify(title: str) -> str:
+    return "-".join(title.lower().split()) + "-" + uuid.uuid4().hex[:6]

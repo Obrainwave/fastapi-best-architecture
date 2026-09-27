@@ -58,42 +58,11 @@ class BadRequestError(AppException):
             error_code="BAD_REQUEST",
         )
 
-class ModuleAccessError(AppException):
-    def __init__(self, message: str = "Module not licensed"):
-        super().__init__(
-            message=message,
-            status_code=403,
-            error_code="MODULE_NOT_LICENSED",
-        )
 
-class JournalImbalancedError(AppException):
-    def __init__(self, message: str = "Journal is imbalanced"):
-        super().__init__(
-            message=message,
-            status_code=422,
-            error_code="JOURNAL_IMBALANCED",
-        )
-
-class PostingControlViolationError(AppException):
-    def __init__(self, message: str = "Posting control violated"):
+class InsufficientFundsError(AppException):
+    def __init__(self, message: str="Insufficient funds"):
         super().__init__(
             message=message,
             status_code=400,
-            error_code="POSTING_CONTROL_VIOLATED",
-        )
-
-class ClosedPeriodError(AppException):
-    def __init__(self, message: str = "Fiscal period is closed"):
-        super().__init__(
-            message=message,
-            status_code=409,
-            error_code="CLOSED_PERIOD",
-        )
-
-class DuplicatePostingError(AppException):
-    def __init__(self, message: str = "Journal already posted"):
-        super().__init__(
-            message=message,
-            status_code=409,
-            error_code="DUPLICATE_POSTING",
+            error_code="INSUFFICIENT_FUNDS",
         )
